@@ -1,0 +1,126 @@
+const Status = require('../models/StatusModel');
+const FriendRequest = require('../models/FriendRequestModel');
+
+// Create a status
+const createStatus = async (req, res) => {
+    try {
+        const { text, image, backgroundColor } = req.body;
+        const userId = req.user.id;
+
+        if (!text && !image) {
+            return res.status(400).json({ message: 'Text or image required' });
+        }
+
+        const status = await Status.create({
+            user: userId,
+            text,
+            image,
+            backgroundColor: backgroundColor || '#00a884'
+        });
+
+        const populated = await status.populate('user', 'name avatar');
+        res.status(201).json({ message: 'Status created', status: populated });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Get statuses of friends + your own
+const getFriendsStatuses = async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        // Get accepted friends
+        const friendRequests = await FriendRequest.find({
+            status: 'accepted',
+            $or: [{ sender: userId }, { receiver: userId }]
+        });
+
+        const friendIds = friendRequests.map(r =>
+            r.sender.toString() === userId ? r.receiver : r.sender
+        );
+
+        // Include self
+        friendIds.push(userId);
+
+        const statuses = await Status.find({
+            user: { $in: friendIds },
+            expiresAt: { $gt: new Date() }
+        })
+        .populate('user', 'name avatar')
+        .sort({ createdAt: -1 });
+
+        // Group by user
+        const grouped = {};
+        statuses.forEach(status => {
+            const uid = status.user._id.toString();
+            if (!grouped[uid]) {
+                grouped[uid] = {
+                    user: status.user,
+                    statuses: [],
+                    hasUnread: false
+                };
+            }
+            grouped[uid].statuses.push(status);
+            if (!status.viewers.includes(userId)) {
+                grouped[uid].hasUnread = true;
+            }
+        });
+
+        res.status(200).json(Object.values(grouped));
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Mark status as viewed
+const viewStatus = async (req, res) => {
+    try {
+        const { statusId } = req.params;
+        const userId = req.user.id;
+
+        await Status.findByIdAndUpdate(statusId, {
+            $addToSet: { viewers: userId }
+        });
+
+        res.status(200).json({ message: 'Viewed' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Delete your own status
+const deleteStatus = async (req, res) => {
+    try {
+        const { statusId } = req.params;
+        const userId = req.user.id;
+
+        const status = await Status.findById(statusId);
+        if (!status) return res.status(404).json({ message: 'Status not found' });
+        if (status.user.toString() !== userId) {
+            return res.status(403).json({ message: 'Not authorized' });
+        }
+
+        await Status.findByIdAndDelete(statusId);
+        res.status(200).json({ message: 'Status deleted' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Get your own statuses
+const getMyStatuses = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const statuses = await Status.find({
+            user: userId,
+            expiresAt: { $gt: new Date() }
+        }).sort({ createdAt: -1 });
+
+        res.status(200).json(statuses);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+module.exports = { createStatus, getFriendsStatuses, viewStatus, deleteStatus, getMyStatuses };
